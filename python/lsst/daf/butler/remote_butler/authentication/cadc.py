@@ -37,21 +37,21 @@ from pathlib import Path
 
 from .interface import RemoteButlerAuthenticationProvider
 
-# CADC Certificate Delegation Protocol (CDP) resource ID and feature ID
-CADC_OPENID_CONFIG_URL = "https://ws-cadc.canfar.net/ac/.well-known/openid-configuration"
-CADC_PROXY_FILENAME = os.path.join(Path.home(),".ssl","cadcproxy.pem")
-CADC_TOKEN_ENV_VAR = "CADC_TOKEN"
+OPENID_CONFIG_URL = os.getenv("OPENID_CONFIG_URL",
+                                   "https://ws-cadc.canfar.net/ac/.well-known/openid-configuration")
+SSL_PROXY_FILENAME = os.getenv("SSL_PROXY_FILENAME",
+                               os.path.join(Path.home(),".ssl","cadcproxy.pem"))
+TOKEN_ENV_VAR = "CADC_TOKEN"
 
 def get_cadc_authorize_url() -> str:
-    """Query the CADC openid configuration to get the authorization URL."""
+    """Query the openid configuration to get the authorization URL."""
     try:
-        response = httpx.get(CADC_OPENID_CONFIG_URL)
+        response = httpx.get(OPENID_CONFIG_URL)
         response.raise_for_status()
         config = response.json()
         return config["authorization_endpoint"]
     except httpx.RequestError as e:
-        logging.error(f"Failed to retrieve CADC authorization URL: {e}")
-        raise RuntimeError("Could not retrieve CADC authorization URL") from e
+        raise RuntimeError(f"Failed to find authorization URL at {OPENID_CONFIG_URL}") from e
 
 
 class CadcAuthenticationProvider(RemoteButlerAuthenticationProvider):
@@ -63,45 +63,41 @@ class CadcAuthenticationProvider(RemoteButlerAuthenticationProvider):
     # serialized and transferred to another process to execute file transfers.
 
     def __init__(self) -> None:
-        self._token = os.environ.get(CADC_TOKEN_ENV_VAR)
+        self._token = os.environ.get(TOKEN_ENV_VAR)
 
     @property
     def token(self) -> str:
         if self._token_is_valid:
             return self._token
 
-        # Get a new token from CADC AC
-        if not os.path.exists(CADC_PROXY_FILENAME):
-            logging.error(f"CADC proxy certificate file {CADC_PROXY_FILENAME} not found an CADC_TOKEN invalid.")
-            raise FileNotFoundError(f"CADC proxy certificate file not found: {CADC_PROXY_FILENAME}")
+        # Get a new token from authorize endpoint and ssl cert.
+        if not os.path.exists(SSL_PROXY_FILENAME):
+            raise FileNotFoundError(f"Proxy certificate file not found: {SSL_PROXY_FILENAME}")
         ctx = ssl.create_default_context()
-        ctx.load_cert_chain(certfile=CADC_PROXY_FILENAME)  # Optionally also keyfile or password.
+        ctx.load_cert_chain(certfile=SSL_PROXY_FILENAME)  # Optionally also keyfile or password.
         params = {'response_type': 'token'}
         try:
             auth_url = get_cadc_authorize_url()
             response = httpx.Client(verify=ctx).get(auth_url, params=params)
             response.raise_for_status()
         except httpx.RequestError as e:
-            logging.error(f"Failed to retrieve CADC token: {e}")
-            raise RuntimeError("Could not retrieve CADC token") from e
+            raise RuntimeError("Could not retrieve token") from e
 
         # update the token in the environment variable for this session.
-        os.environ[CADC_TOKEN_ENV_VAR] = response.text
+        os.environ[TOKEN_ENV_VAR] = response.text
         # update the internal token variable
-        self._token = os.environ.get(CADC_TOKEN_ENV_VAR)
+        self._token = os.environ.get(TOKEN_ENV_VAR)
         # self-reference to ensure that the token is valid
         return self.token
 
     @property
     def _token_is_valid(self) -> bool:
         if self._token is None:
-            logging.debug("No CADC token found.")
             return False
         try:
             # Decode the base64 string
             decoded_bytes = base64.b64decode(self._token)
             decoded_str = decoded_bytes.decode('utf-8')
-            logging.debug(f"Decoded CADC Token string: {decoded_str}")
 
             # Search for expirytime using a regular expression
             match = re.search(r"expirytime=(\d+)", decoded_str)
@@ -110,8 +106,6 @@ class CadcAuthenticationProvider(RemoteButlerAuthenticationProvider):
 
             exp_time = int(match.group(1))
             current_time = int(time.time())
-            logging.debug(f"CADC Token Expirytime: {exp_time} ({time.ctime(exp_time)})")
-            logging.debug(f"Current time: {current_time} ({time.ctime(current_time)})")
             return exp_time > current_time
         except Exception as e:
             logging.debug(e)
