@@ -26,11 +26,22 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from __future__ import annotations
+import os
+import base64
+import re
+import time
+import logging
+import requests
 
 from .interface import RemoteButlerAuthenticationProvider
 
+# CADC Certificate Delegation Protocol (CDP) resource ID and feature ID
+CADC_AC_ENDPOINT = "https://ws-cadc.canfar.net/ac/authorize"
+CADC_PROXY_FILENAME = "cadcproxy.pem"
+CADC_TOKEN_ENV_VAR = "CADC_TOKEN"
 
-class CadcAuthenticationProvider(RemoteButlerAuthenticationProvider):
+
+class CadcAuthenticationProvider:
     """Provide HTTP headers required for authenticating the user at the
     Canadian Astronomy Data Centre.
     """
@@ -39,16 +50,56 @@ class CadcAuthenticationProvider(RemoteButlerAuthenticationProvider):
     # serialized and transferred to another process to execute file transfers.
 
     def __init__(self) -> None:
-        # TODO: Load authentication information somehow
-        pass
+        self._token = os.environ.get(CADC_TOKEN_ENV_VAR)
+
+    @property
+    def token(self) -> str:
+        if self._token_is_valid:
+            return self._token
+
+        # Get a new token from CADC AC
+        cadcproxy_file = os.path.join(os.environ.get("HOME", ""), ".ssl", CADC_PROXY_FILENAME)
+        params = {'response_type': 'token'}
+        try:
+            response = requests.get(CADC_AC_ENDPOINT, cert=cadcproxy_file, params=params)
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Failed to retrieve CADC token: {e}")
+            raise
+
+        # update the token in the environment variable
+        os.environ[CADC_TOKEN_ENV_VAR] = response.text
+        # update the internal token variable
+        self._token = os.environ.get(CADC_TOKEN_ENV_VAR)
+        # self-reference to ensure that the token is valid
+        return self.token
+
+    @property
+    def _token_is_valid(self) -> bool:
+        if self._token is None:
+            logging.debug("No CADC token found.")
+            return False
+        try:
+            # Decode the base64 string
+            decoded_bytes = base64.b64decode(self._token)
+            decoded_str = decoded_bytes.decode('utf-8')
+            logging.debug(f"Decoded CADC Token string: {decoded_str}")
+
+            # Search for expirytime using a regular expression
+            match = re.search(r"expirytime=(\d+)", decoded_str)
+            if not match:
+                return False
+
+            exp_time = int(match.group(1))
+            current_time = int(time.time())
+            logging.debug(f"CADC Token Expirytime: {exp_time} ({time.ctime(exp_time)})")
+            logging.debug(f"Current time: {current_time} ({time.ctime(current_time)})")
+            return exp_time > current_time
+        except Exception as e:
+            logging.debug(e)
+            return False
 
     def get_server_headers(self) -> dict[str, str]:
-        # TODO: I think you mentioned that you might not require
-        # authentication for the Butler server REST API initially --
-        # if so, you can leave this blank.
-        return {}
+        return {"Authorization": f"Bearer {self.token}"}
 
     def get_datastore_headers(self) -> dict[str, str]:
-        # TODO: Supply the headers needed to access the Storage Inventory
-        # system.
-        return {"Authorization": "Bearer stub"}
+        return {"Authorization": f"Bearer {self.token}"}
