@@ -26,22 +26,25 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from __future__ import annotations
-import os
+
 import base64
-import re
-import time
 import logging
-import httpx
+import os
+import re
 import ssl
+import time
 from pathlib import Path
+
+import httpx
 
 from .interface import RemoteButlerAuthenticationProvider
 
-OPENID_CONFIG_URL = os.getenv("OPENID_CONFIG_URL",
-                                   "https://ws-cadc.canfar.net/ac/.well-known/openid-configuration")
-SSL_PROXY_FILENAME = os.getenv("SSL_PROXY_FILENAME",
-                               os.path.join(Path.home(),".ssl","cadcproxy.pem"))
-TOKEN_ENV_VAR = "CADC_TOKEN"
+OPENID_CONFIG_URL = os.getenv(
+    "OPENID_CONFIG_URL", "https://ws-cadc.canfar.net/ac/.well-known/openid-configuration"
+)
+CADC_SSL_PROXY_FILENAME = os.getenv("SSL_PROXY_FILENAME", os.path.join(Path.home(), ".ssl", "cadcproxy.pem"))
+CADC_TOKEN_ENVIRONMENT_KEY = "CADC_TOKEN"
+
 
 def get_cadc_authorize_url() -> str:
     """Query the openid configuration to get the authorization URL."""
@@ -63,7 +66,7 @@ class CadcAuthenticationProvider(RemoteButlerAuthenticationProvider):
     # serialized and transferred to another process to execute file transfers.
 
     def __init__(self) -> None:
-        self._token = os.environ.get(TOKEN_ENV_VAR)
+        self._token = os.environ.get(CADC_TOKEN_ENVIRONMENT_KEY)
 
     @property
     def token(self) -> str:
@@ -71,23 +74,22 @@ class CadcAuthenticationProvider(RemoteButlerAuthenticationProvider):
             return self._token
 
         # Get a new token from authorize endpoint and ssl cert.
-        if not os.path.exists(SSL_PROXY_FILENAME):
-            raise FileNotFoundError(f"Proxy certificate file not found: {SSL_PROXY_FILENAME}")
-        ctx = ssl.create_default_context()
-        ctx.load_cert_chain(certfile=SSL_PROXY_FILENAME)  # Optionally also keyfile or password.
-        params = {'response_type': 'token'}
+        if not os.path.exists(CADC_SSL_PROXY_FILENAME):
+            logging.warning(f"Proxy certificate file not found: {CADC_SSL_PROXY_FILENAME}")
+            return self._token
+
         try:
+            ctx = ssl.create_default_context()
+            ctx.load_cert_chain(certfile=CADC_SSL_PROXY_FILENAME)  # Optionally also keyfile or password.
+            params = {"response_type": "token"}
             auth_url = get_cadc_authorize_url()
             response = httpx.Client(verify=ctx).get(auth_url, params=params)
             response.raise_for_status()
-        except httpx.RequestError as e:
-            raise RuntimeError("Could not retrieve token") from e
+            self._token = response.text
+            os.environ[CADC_TOKEN_ENVIRONMENT_KEY] = self._token
+        except httpx.RequestError:
+            logging.warning("Failed to refresh token")
 
-        # update the token in the environment variable for this session.
-        os.environ[TOKEN_ENV_VAR] = response.text
-        # update the internal token variable
-        self._token = os.environ.get(TOKEN_ENV_VAR)
-        # self-reference to ensure that the token is valid
         return self.token
 
     @property
@@ -97,7 +99,7 @@ class CadcAuthenticationProvider(RemoteButlerAuthenticationProvider):
         try:
             # Decode the base64 string
             decoded_bytes = base64.b64decode(self._token)
-            decoded_str = decoded_bytes.decode('utf-8')
+            decoded_str = decoded_bytes.decode("utf-8")
 
             # Search for expirytime using a regular expression
             match = re.search(r"expirytime=(\d+)", decoded_str)
@@ -112,7 +114,7 @@ class CadcAuthenticationProvider(RemoteButlerAuthenticationProvider):
             return False
 
     def get_server_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"}
+        return {}
 
     def get_datastore_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}"}
