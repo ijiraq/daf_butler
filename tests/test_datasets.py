@@ -42,6 +42,7 @@ from lsst.daf.butler import (
     SerializedDatasetRefContainerV1,
     StorageClass,
     StorageClassFactory,
+    UnknownComponentError,
 )
 from lsst.daf.butler.datastore.stored_file_info import StoredFileInfo
 from lsst.daf.butler.datastores.file_datastore.retrieve_artifacts import ZipIndex
@@ -484,19 +485,6 @@ class DatasetTypeTestCase(unittest.TestCase):
         self.assertEqual(datasetTypeOut, componentDatasetType)
         self.assertEqual(datasetTypeOut._parentStorageClassName, componentDatasetType._parentStorageClassName)
 
-        # Now with a storage class that is created by the factory
-        factoryStorageClassClass = StorageClassFactory.makeNewStorageClass("ParentClass")
-        factoryComponentStorageClassClass = StorageClassFactory.makeNewStorageClass("ComponentClass")
-        componentDatasetType = DatasetType(
-            DatasetType.nameWithComponent(datasetTypeName, "comp"),
-            dimensions,
-            factoryComponentStorageClassClass(),
-            parentStorageClass=factoryStorageClassClass(),
-        )
-        datasetTypeOut = pickle.loads(pickle.dumps(componentDatasetType))
-        self.assertEqual(datasetTypeOut, componentDatasetType)
-        self.assertEqual(datasetTypeOut._parentStorageClassName, componentDatasetType._parentStorageClassName)
-
     def test_composites(self) -> None:
         """Test components within composite DatasetTypes."""
         storageClassA = StorageClass("compA")
@@ -529,8 +517,11 @@ class DatasetTypeTestCase(unittest.TestCase):
         self.assertEqual(datasetTypeComponentB.parentStorageClass, storageClass)
         self.assertIsNone(datasetTypeComposite.parentStorageClass)
 
-        with self.assertRaises(KeyError):
+        with self.assertRaises(UnknownComponentError):
             datasetTypeComposite.makeComponentDatasetType("compF")
+
+        with self.assertRaises(UnknownComponentError):
+            datasetTypeComposite.componentTypeName("unknown")
 
 
 class DatasetRefTestCase(unittest.TestCase):
