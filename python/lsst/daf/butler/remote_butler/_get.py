@@ -1,5 +1,4 @@
 from typing import Any
-from urllib.parse import urlparse
 
 from pydantic import AnyHttpUrl
 
@@ -16,16 +15,8 @@ from ..datastores.file_datastore.get import (
     generate_datastore_get_information,
     get_dataset_as_python_object_from_get_info,
 )
-from .authentication.cadc import _SERVER_WHITELIST as _CADC_SERVER_WHITELIST
 from .authentication.interface import RemoteButlerAuthenticationProvider
 from .server_models import FileAuthenticationMode, FileInfoPayload, FileInfoRecord
-
-
-def _should_skip_cadc_webdav_probe(path: HttpResourcePath) -> bool:
-    hostname = urlparse(path.geturl()).hostname
-    if not hostname or not any(hostname.lower().endswith(suffix) for suffix in _CADC_SERVER_WHITELIST):
-        return False
-    return True
 
 
 def get_dataset_as_python_object(
@@ -97,11 +88,11 @@ def convert_http_url_to_resource_path(
     else:
         raise ValueError(f"Unknown authentication type: '{auth_mode}'")
 
-    path = HttpResourcePath.create_http_resource_path(str(url), extra_headers=headers)
-
-    if auth_mode == "datastore" or _should_skip_cadc_webdav_probe(path):
-        path._is_webdav = False
-        path._server = None
+    path = HttpResourcePath.create_http_resource_path(
+        str(url),
+        extra_headers=headers,
+        datastore_authenticated=(auth_mode == "datastore"),
+    )
 
     return path
 
